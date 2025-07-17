@@ -157,3 +157,23 @@ def generar_respuesta_inteligente(pregunta_original, contexto, descripcion_busca
 
 # --- Interfaz de la Aplicación ---
 pregunta = st.text_input("Escribe aquí tu pregunta (ej: 'coche por menos de 30.000€', 'el más potente y deportivo', 'híbrido con techo panorámico')", key="pregunta_usuario")
+
+if st.button("Enviar Pregunta", type="primary"):
+    if pregunta:
+        with st.spinner("Analizando tu petición y buscando en la base de datos..."):
+            # 1. Extraer criterios
+            criterios_busqueda = extraer_criterios_de_busqueda(pregunta)
+            
+            if criterios_busqueda:
+                # 2. Realizar búsqueda inteligente
+                contexto_encontrado, descripcion_usada = busqueda_inteligente(criterios_busqueda)
+                
+                # 3. Generar respuesta
+                if contexto_encontrado:
+                    respuesta_final = generar_respuesta_inteligente(pregunta, contexto_encontrado, descripcion_usada)
+                    st.markdown("### Respuesta:")
+                    st.write(respuesta_final)
+                else:
+                    st.warning("Lo siento, no he encontrado ningún modelo que cumpla con los criterios de tu búsqueda, ni siquiera de forma parcial.")
+    else:
+        st.warning("Por favor, escribe una pregunta.")
