@@ -11,9 +11,8 @@ st.set_page_config(
 )
 
 st.title("🚗 Asistente Virtual SEAT")
-st.caption("Tu experto en la gama de vehículos SEAT. Soy capaz de entender peticiones complejas y filtrar por precio.")
 
-# --- Conexión a los servicios usando los "Secrets" de Streamlit ---
+# --- Conexión a los servicios ---
 try:
     PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
@@ -31,24 +30,15 @@ def get_clients():
 
 client_openai, pinecone_index = get_clients()
 
-# --- MAGIA NUEVA (1): Función para extraer criterios de la pregunta ---
+# --- Funciones de Lógica (sin cambios por ahora) ---
 def extraer_criterios_de_busqueda(pregunta_usuario):
-    """
-    Usa un LLM para convertir la pregunta en lenguaje natural a un objeto JSON
-    con los criterios de búsqueda que podemos usar.
-    """
     prompt = f"""
     Analiza la siguiente pregunta de un usuario y extráela en un formato JSON.
     La pregunta es: "{pregunta_usuario}"
 
     El JSON debe tener dos claves:
     1. "precio_max": un entero con el precio máximo si se menciona. Si no, 0.
-    2. "descripcion": una cadena de texto que resuma todas las demás características que busca el usuario (ej: 'coche grande con buen maletero', 'deportivo y potente', 'híbrido con techo panorámico').
-
-    Ejemplos:
-    - Pregunta: "un coche por menos de 30000 euros que sea bueno para viajar" -> JSON: {{"precio_max": 30000, "descripcion": "coche bueno para viajar"}}
-    - Pregunta: "el más potente y deportivo" -> JSON: {{"precio_max": 0, "descripcion": "el más potente y deportivo"}}
-    - Pregunta: "algo grande que pueda ser de color verde y con techo panoramico" -> JSON: {{"precio_max": 0, "descripcion": "algo grande de color verde y con techo panoramico"}}
+    2. "descripcion": una cadena de texto que resuma todas las demás características que busca el usuario.
 
     Responde únicamente con el objeto JSON.
     """
@@ -65,17 +55,11 @@ def extraer_criterios_de_busqueda(pregunta_usuario):
         st.error(f"Error al extraer criterios: {e}")
         return None
 
-# --- MAGIA NUEVA (2): Función de búsqueda que se relaja si no encuentra ---
 def busqueda_inteligente(criterios, top_k=5):
-    """
-    Realiza una búsqueda en Pinecone. Si la descripción es muy específica y no
-    devuelve resultados, la relaja a una búsqueda más general.
-    """
     filtro_metadata = {}
     if criterios.get("precio_max") and criterios["precio_max"] > 0:
         filtro_metadata["precio"] = {"$lte": criterios["precio_max"]}
 
-    # --- Intento 1: Búsqueda estricta con la descripción completa ---
     query_embedding = client_openai.embeddings.create(
         input=[criterios["descripcion"]], model="text-embedding-3-small"
     ).data[0].embedding
@@ -87,16 +71,10 @@ def busqueda_inteligente(criterios, top_k=5):
         filter=filtro_metadata
     )
 
-    # Si la búsqueda estricta funciona, devuelve los resultados
     if res_busqueda['matches']:
         contexto = [item['metadata']['texto'] for item in res_busqueda['matches']]
-        # Devolvemos el contexto y la descripción original que sí funcionó
         return "\n\n---\n\n".join(contexto), criterios["descripcion"]
 
-    # --- Intento 2: Búsqueda relajada (si la primera falló) ---
-    # Si no hubo resultados, es probable que la descripción fuera demasiado específica
-    # (ej: "color verde"). Ahora buscamos sin descripción, solo con el filtro de precio.
-    # La pregunta que usaremos para el embedding será más genérica.
     st.info("La búsqueda inicial fue demasiado específica. Intentando una búsqueda más amplia...")
     
     pregunta_relajada = "dime todos los modelos de coche disponibles"
@@ -113,16 +91,11 @@ def busqueda_inteligente(criterios, top_k=5):
     
     if res_busqueda_relajada['matches']:
         contexto = [item['metadata']['texto'] for item in res_busqueda_relajada['matches']]
-        # Devolvemos el contexto y la descripción original que falló, para que el LLM sepa qué explicar
         return "\n\n---\n\n".join(contexto), criterios["descripcion"]
 
     return None, None
 
-
 def generar_respuesta_inteligente(pregunta_original, contexto, descripcion_buscada):
-    """
-    Genera una respuesta que explica qué se encontró y qué no.
-    """
     prompt_sistema = f"""
     Eres "Asistente Virtual SEAT", un experto amable y servicial. Tu objetivo es ayudar al usuario a encontrar su coche ideal.
     La pregunta original del usuario fue: "{pregunta_original}"
@@ -136,9 +109,6 @@ def generar_respuesta_inteligente(pregunta_original, contexto, descripcion_busca
     1. Si el contexto parece coincidir bien con la descripción buscada, simplemente resume los resultados y preséntalos.
     2. Si el contexto NO parece coincidir con alguna parte específica de la descripción (ej: el usuario pidió "color verde" pero en el contexto no se menciona), explícalo amablemente. Di qué es lo que NO encontraste, y presenta los resultados que SÍ encontraste como una alternativa.
     
-    Ejemplo de respuesta inteligente:
-    "He buscado un coche grande con techo panorámico y de color verde. Aunque en mi base de datos no tengo información específica sobre los colores, sí he encontrado estos modelos grandes que ofrecen el techo panorámico como extra opcional: [resume los resultados del contexto]."
-
     Responde de forma clara y útil.
     """
     try:
@@ -155,25 +125,43 @@ def generar_respuesta_inteligente(pregunta_original, contexto, descripcion_busca
         st.error(f"Error al generar la respuesta con OpenAI: {e}")
         return "Hubo un problema al generar la respuesta."
 
-# --- Interfaz de la Aplicación ---
-pregunta = st.text_input("Escribe aquí tu pregunta (ej: 'coche por menos de 30.000€', 'el más potente y deportivo', 'híbrido con techo panorámico')", key="pregunta_usuario")
+# --- Interfaz de la Aplicación (AQUÍ ESTÁN LOS CAMBIOS) ---
 
-if st.button("Enviar Pregunta", type="primary"):
-    if pregunta:
-        with st.spinner("Analizando tu petición y buscando en la base de datos..."):
-            # 1. Extraer criterios
-            criterios_busqueda = extraer_criterios_de_busqueda(pregunta)
-            
-            if criterios_busqueda:
-                # 2. Realizar búsqueda inteligente
-                contexto_encontrado, descripcion_usada = busqueda_inteligente(criterios_busqueda)
-                
-                # 3. Generar respuesta
-                if contexto_encontrado:
-                    respuesta_final = generar_respuesta_inteligente(pregunta, contexto_encontrado, descripcion_usada)
-                    st.markdown("### Respuesta:")
-                    st.write(respuesta_final)
+# 1. Inicializar el historial de chat si no existe
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# 2. Mostrar el mensaje de bienvenida del asistente la primera vez
+if not st.session_state.messages:
+    with st.chat_message("assistant"):
+        st.write("¡Hola! Soy tu asistente virtual de SEAT. ¿En qué puedo ayudarte? Puedes preguntarme por modelos, precios o características. Por ejemplo: 'Busco un coche familiar por menos de 40.000€'")
+
+# 3. Mostrar los mensajes antiguos del historial
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# 4. Obtener la nueva pregunta del usuario en la parte inferior
+if prompt := st.chat_input("Escribe tu pregunta aquí..."):
+    # Añadir y mostrar el mensaje del usuario en la interfaz
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Generar y mostrar la respuesta del asistente
+    with st.chat_message("assistant"):
+        with st.spinner("Pensando..."):
+            # La lógica de búsqueda y respuesta sigue siendo la misma por ahora
+            criterios = extraer_criterios_de_busqueda(prompt)
+            if criterios:
+                contexto, descripcion = busqueda_inteligente(criterios)
+                if contexto:
+                    respuesta = generar_respuesta_inteligente(prompt, contexto, descripcion)
+                    st.write(respuesta)
+                    st.session_state.messages.append({"role": "assistant", "content": respuesta})
                 else:
-                    st.warning("Lo siento, no he encontrado ningún modelo que cumpla con los criterios de tu búsqueda, ni siquiera de forma parcial.")
-    else:
-        st.warning("Por favor, escribe una pregunta.")
+                    st.write("Lo siento, no he encontrado ningún modelo que cumpla esos criterios.")
+                    st.session_state.messages.append({"role": "assistant", "content": "Lo siento, no he encontrado ningún modelo que cumpla esos criterios."})
+            else:
+                st.write("No he podido entender tu petición. ¿Puedes reformularla?")
+                st.session_state.messages.append({"role": "assistant", "content": "No he podido entender tu petición. ¿Puedes reformularla?"})
