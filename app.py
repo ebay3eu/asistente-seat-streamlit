@@ -23,6 +23,7 @@ except FileNotFoundError:
 # --- Inicialización de Clientes ---
 @st.cache_resource
 def get_clients():
+    """Inicializa y cachea los clientes de OpenAI y Pinecone."""
     client_openai = OpenAI(api_key=OPENAI_API_KEY)
     pc = Pinecone(api_key=PINECONE_API_KEY)
     pinecone_index = pc.Index("asistente-seat")
@@ -32,6 +33,7 @@ client_openai, pinecone_index = get_clients()
 
 # --- Funciones de Lógica ---
 def extraer_criterios_de_busqueda(pregunta_usuario, historial_chat):
+    """Usa un LLM para convertir la pregunta en un JSON con criterios de búsqueda."""
     conversacion_para_contexto = "\n".join([f"{msg['role']}: {msg['content']}" for msg in historial_chat])
     prompt = f"""
     Analiza la última pregunta del usuario teniendo en cuenta el historial de la conversación para darle contexto.
@@ -55,6 +57,12 @@ def extraer_criterios_de_busqueda(pregunta_usuario, historial_chat):
         return None
 
 def busqueda_inteligente(criterios, top_k=5):
+    """Realiza una búsqueda en Pinecone, relajándola si es necesario."""
+    # **LA CORRECCIÓN ESTÁ AQUÍ**
+    # Si no hay descripción o está vacía, no podemos buscar.
+    if not criterios.get("descripcion"):
+        return None, None
+
     filtro_metadata = {}
     if criterios.get("precio_max") and criterios["precio_max"] > 0:
         filtro_metadata["precio"] = {"$lte": criterios["precio_max"]}
@@ -76,8 +84,8 @@ def busqueda_inteligente(criterios, top_k=5):
 
     return None, None
 
-# CAMBIO CLAVE: La función ahora "genera" la respuesta en lugar de retornarla
 def generar_respuesta_inteligente(pregunta_original, contexto, descripcion_buscada, historial_chat):
+    """Genera una respuesta en streaming explicando qué se encontró y qué no."""
     prompt_sistema = f"""
     Eres "Asistente Virtual SEAT", un experto amable y servicial. Tu objetivo es ayudar al usuario a encontrar su coche ideal.
     La pregunta original del usuario fue: "{pregunta_original}"
@@ -96,14 +104,12 @@ def generar_respuesta_inteligente(pregunta_original, contexto, descripcion_busca
     mensajes_para_api.append({"role": "user", "content": pregunta_original})
 
     try:
-        # CAMBIO CLAVE: Añadimos stream=True
         stream = client_openai.chat.completions.create(
             model="gpt-4o",
             messages=mensajes_para_api,
             temperature=0.5,
             stream=True,
         )
-        # CAMBIO CLAVE: Usamos "yield" para devolver cada trozo de la respuesta
         for chunk in stream:
             yield chunk.choices[0].delta.content or ""
             
@@ -135,12 +141,9 @@ if prompt := st.chat_input("Escribe tu pregunta aquí..."):
             if criterios:
                 contexto, descripcion = busqueda_inteligente(criterios)
                 if contexto:
-                    # CAMBIO CLAVE: Usamos st.write_stream para mostrar la respuesta
-                    # Esta función consume el "generador" y lo muestra en tiempo real
                     respuesta_completa = st.write_stream(
                         generar_respuesta_inteligente(prompt, contexto, descripcion, historial_relevante)
                     )
-                    # Guardamos la respuesta completa en el historial una vez que ha terminado
                     st.session_state.messages.append({"role": "assistant", "content": respuesta_completa})
                 else:
                     respuesta_error = "Lo siento, no he encontrado ningún modelo que cumpla esos criterios."
