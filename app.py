@@ -1,5 +1,6 @@
 import streamlit as st
 import json
+import os
 from openai import OpenAI
 from pinecone import Pinecone
 
@@ -33,16 +34,29 @@ client_openai, pinecone_index = get_clients()
 
 # --- Funciones de Lógica ---
 def extraer_criterios_de_busqueda(pregunta_usuario, historial_chat):
-    """Usa un LLM para convertir la pregunta en un JSON con criterios de búsqueda."""
+    """
+    Usa un LLM para identificar la INTENCIÓN del usuario y extraer entidades.
+    """
     conversacion_para_contexto = "\n".join([f"{msg['role']}: {msg['content']}" for msg in historial_chat])
     prompt = f"""
-    Analiza la última pregunta del usuario teniendo en cuenta el historial de la conversación para darle contexto.
-    HISTORIAL:
-    {conversacion_para_contexto}
-
+    Analiza la última pregunta del usuario y el historial para determinar su intención.
+    HISTORIAL: {conversacion_para_contexto}
     ÚLTIMA PREGUNTA: "{pregunta_usuario}"
 
-    Extrae los criterios en un JSON con claves "precio_max" (int) y "descripcion" (string), combinando el historial si es necesario.
+    Identifica una de las siguientes intenciones:
+    1. "enviar_ficha": si el usuario pide explícitamente la ficha técnica, el catálogo o un documento de un modelo.
+    2. "busqueda_general": para cualquier otra pregunta sobre modelos, precios, comparaciones, etc.
+
+    Responde en formato JSON. El JSON debe tener:
+    - "intent": la intención identificada ("enviar_ficha" o "busqueda_general").
+    - "modelo": si la intención es "enviar_ficha", el nombre del modelo en minúsculas (ej: "ibiza", "arona"). Si no, null.
+    - "criterios": si la intención es "busqueda_general", un objeto con "precio_max" y "descripcion". Si no, null.
+
+    Ejemplos:
+    - Pregunta: "dame la ficha técnica del arona" -> {{"intent": "enviar_ficha", "modelo": "arona", "criterios": null}}
+    - Pregunta: "un coche por menos de 30000" -> {{"intent": "busqueda_general", "modelo": null, "criterios": {{"precio_max": 30000, "descripcion": "un coche"}}}}
+    - Pregunta: "cuál es el híbrido más potente" -> {{"intent": "busqueda_general", "modelo": null, "criterios": {{"precio_max": 0, "descripcion": "el híbrido más potente"}}}}
+
     Responde únicamente con el objeto JSON.
     """
     try:
@@ -56,75 +70,38 @@ def extraer_criterios_de_busqueda(pregunta_usuario, historial_chat):
     except Exception:
         return None
 
+# --- Las demás funciones de búsqueda y generación de respuesta no cambian ---
 def busqueda_inteligente(criterios, top_k=10):
-    """Realiza una búsqueda inteligente, priorizando filtros si la descripción es genérica."""
-    if not criterios.get("descripcion"):
-        return None, None
-
+    if not criterios or not criterios.get("descripcion"): return None, None
     filtro_metadata = {}
-    if criterios.get("precio_max") and criterios["precio_max"] > 0:
-        filtro_metadata["precio"] = {"$lte": criterios["precio_max"]}
-
+    if criterios.get("precio_max", 0) > 0: filtro_metadata["precio"] = {"$lte": criterios["precio_max"]}
     terminos_genericos = ["coche", "coches", "vehículo", "vehículos", "un coche", "dime los modelos", "modelos disponibles", "dime que coches hay"]
     descripcion_normalizada = criterios.get("descripcion", "").lower().strip()
-    
-    # **AQUÍ ESTÁ LA NUEVA LÓGICA MEJORADA**
-    # Si tenemos un filtro y la descripción es genérica, priorizamos el filtro.
     if filtro_metadata and descripcion_normalizada in terminos_genericos:
-        st.info("Búsqueda por filtro detectada. Obteniendo todos los modelos que cumplen los criterios...")
-        # Usamos un "vector cero" para que la búsqueda se base casi exclusivamente en el filtro,
-        # devolviendo hasta 10 resultados que lo cumplan.
-        res_busqueda = pinecone_index.query(
-            vector=[0.0] * 1536, 
-            top_k=top_k,
-            include_metadata=True,
-            filter=filtro_metadata
-        )
+        res_busqueda = pinecone_index.query(vector=[0.0] * 1536, top_k=top_k, include_metadata=True, filter=filtro_metadata)
     else:
-        # Si la descripción es específica, usamos la lógica de siempre (búsqueda por similitud)
         query_embedding = client_openai.embeddings.create(input=[criterios["descripcion"]], model="text-embedding-3-small").data[0].embedding
         res_busqueda = pinecone_index.query(vector=query_embedding, top_k=5, include_metadata=True, filter=filtro_metadata)
-
-    # El resto del procesamiento es el mismo
     if res_busqueda['matches']:
         contexto = [item['metadata']['texto'] for item in res_busqueda['matches']]
         return "\n\n---\n\n".join(contexto), criterios["descripcion"]
-
     return None, None
 
-
 def generar_respuesta_inteligente(pregunta_original, contexto, descripcion_buscada, historial_chat):
-    """Genera una respuesta en streaming."""
     prompt_sistema = f"""
     Eres "Asistente Virtual SEAT". Tu objetivo es responder al usuario basándote exclusivamente en el contexto que te proporciono.
     La pregunta del usuario fue: "{pregunta_original}"
     Las características que buscaba eran: "{descripcion_buscada}"
-
-    CONTEXTO ENCONTRADO (resultados de la base de datos):
-    {contexto}
-
-    Tu tarea es:
-    1. Revisa los resultados del contexto.
-    2. Formula una respuesta clara y amable resumiendo los modelos encontrados que cumplen los criterios.
-    3. Si el contexto está vacío, indica que no se encontraron resultados para esos filtros.
+    CONTEXTO ENCONTRADO: {contexto}
+    Tu tarea es revisar los resultados del contexto y formular una respuesta clara y amable resumiendo los modelos encontrados.
     """
-    
     mensajes_para_api = [{"role": "system", "content": prompt_sistema}] 
     mensajes_para_api.extend(historial_chat[-4:]) 
     mensajes_para_api.append({"role": "user", "content": pregunta_original})
-
     try:
-        stream = client_openai.chat.completions.create(
-            model="gpt-4o",
-            messages=mensajes_para_api,
-            temperature=0.5,
-            stream=True,
-        )
-        for chunk in stream:
-            yield chunk.choices[0].delta.content or ""
-            
-    except Exception as e:
-        yield f"Error al generar la respuesta: {e}"
+        stream = client_openai.chat.completions.create(model="gpt-4o", messages=mensajes_para_api, temperature=0.5, stream=True)
+        for chunk in stream: yield chunk.choices[0].delta.content or ""
+    except Exception as e: yield f"Error al generar la respuesta: {e}"
 
 # --- Interfaz de la Aplicación ---
 if "messages" not in st.session_state:
@@ -132,7 +109,7 @@ if "messages" not in st.session_state:
 
 if not st.session_state.messages:
     with st.chat_message("assistant"):
-        st.write("¡Hola! Soy tu asistente virtual de SEAT. ¿En qué puedo ayudarte?")
+        st.write("¡Hola! Soy tu asistente virtual de SEAT. Puedes pedirme la ficha técnica de un modelo o preguntarme lo que necesites.")
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -146,9 +123,35 @@ if prompt := st.chat_input("Escribe tu pregunta aquí..."):
     with st.chat_message("assistant"):
         with st.spinner("Pensando..."):
             historial_relevante = st.session_state.messages[:-1]
-            criterios = extraer_criterios_de_busqueda(prompt, historial_relevante)
+            # 1. Identificar la intención del usuario
+            peticion = extraer_criterios_de_busqueda(prompt, historial_relevante)
             
-            if criterios:
+            # 2. Actuar según la intención detectada
+            if peticion and peticion.get("intent") == "enviar_ficha":
+                # LÓGICA PARA LA NUEVA HABILIDAD
+                modelo = peticion.get("modelo", "").lower()
+                # Construimos la ruta al archivo PDF
+                file_path = os.path.join("fichas_tecnicas", f"{modelo}.pdf")
+
+                if os.path.exists(file_path):
+                    with open(file_path, "rb") as pdf_file:
+                        st.write(f"¡Claro! Aquí tienes la ficha técnica del SEAT {modelo.title()}. Haz clic para descargar:")
+                        st.download_button(
+                            label=f"Descargar Ficha Técnica de {modelo.title()}",
+                            data=pdf_file,
+                            file_name=f"ficha_tecnica_{modelo}.pdf",
+                            mime="application/pdf"
+                        )
+                    # Guardamos un mensaje de éxito en el historial
+                    st.session_state.messages.append({"role": "assistant", "content": f"He preparado la descarga de la ficha técnica del {modelo.title()}."})
+                else:
+                    respuesta_error = f"Lo siento, no he podido encontrar la ficha técnica para el SEAT {modelo.title()}. Asegúrate de que el nombre del modelo es correcto."
+                    st.write(respuesta_error)
+                    st.session_state.messages.append({"role": "assistant", "content": respuesta_error})
+
+            elif peticion and peticion.get("intent") == "busqueda_general":
+                # LÓGICA ANTIGUA PARA PREGUNTAS GENERALES
+                criterios = peticion.get("criterios")
                 contexto, descripcion = busqueda_inteligente(criterios)
                 if contexto:
                     respuesta_completa = st.write_stream(
@@ -160,6 +163,7 @@ if prompt := st.chat_input("Escribe tu pregunta aquí..."):
                     st.write(respuesta_error)
                     st.session_state.messages.append({"role": "assistant", "content": respuesta_error})
             else:
+                # Fallback si no se entiende la petición
                 respuesta_error = "No he podido entender tu petición. ¿Puedes reformularla?"
                 st.write(respuesta_error)
                 st.session_state.messages.append({"role": "assistant", "content": respuesta_error})
