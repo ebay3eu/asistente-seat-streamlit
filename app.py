@@ -56,10 +56,8 @@ def extraer_criterios_de_busqueda(pregunta_usuario, historial_chat):
     except Exception:
         return None
 
-def busqueda_inteligente(criterios, top_k=5):
-    """Realiza una búsqueda en Pinecone, relajándola si es necesario."""
-    # **LA CORRECCIÓN ESTÁ AQUÍ**
-    # Si no hay descripción o está vacía, no podemos buscar.
+def busqueda_inteligente(criterios, top_k=10):
+    """Realiza una búsqueda inteligente, priorizando filtros si la descripción es genérica."""
     if not criterios.get("descripcion"):
         return None, None
 
@@ -67,36 +65,48 @@ def busqueda_inteligente(criterios, top_k=5):
     if criterios.get("precio_max") and criterios["precio_max"] > 0:
         filtro_metadata["precio"] = {"$lte": criterios["precio_max"]}
 
-    query_embedding = client_openai.embeddings.create(input=[criterios["descripcion"]], model="text-embedding-3-small").data[0].embedding
-    res_busqueda = pinecone_index.query(vector=query_embedding, top_k=top_k, include_metadata=True, filter=filtro_metadata)
+    terminos_genericos = ["coche", "coches", "vehículo", "vehículos", "un coche", "dime los modelos", "modelos disponibles", "dime que coches hay"]
+    descripcion_normalizada = criterios.get("descripcion", "").lower().strip()
+    
+    # **AQUÍ ESTÁ LA NUEVA LÓGICA MEJORADA**
+    # Si tenemos un filtro y la descripción es genérica, priorizamos el filtro.
+    if filtro_metadata and descripcion_normalizada in terminos_genericos:
+        st.info("Búsqueda por filtro detectada. Obteniendo todos los modelos que cumplen los criterios...")
+        # Usamos un "vector cero" para que la búsqueda se base casi exclusivamente en el filtro,
+        # devolviendo hasta 10 resultados que lo cumplan.
+        res_busqueda = pinecone_index.query(
+            vector=[0.0] * 1536, 
+            top_k=top_k,
+            include_metadata=True,
+            filter=filtro_metadata
+        )
+    else:
+        # Si la descripción es específica, usamos la lógica de siempre (búsqueda por similitud)
+        query_embedding = client_openai.embeddings.create(input=[criterios["descripcion"]], model="text-embedding-3-small").data[0].embedding
+        res_busqueda = pinecone_index.query(vector=query_embedding, top_k=5, include_metadata=True, filter=filtro_metadata)
 
+    # El resto del procesamiento es el mismo
     if res_busqueda['matches']:
         contexto = [item['metadata']['texto'] for item in res_busqueda['matches']]
         return "\n\n---\n\n".join(contexto), criterios["descripcion"]
 
-    pregunta_relajada = "dime todos los modelos de coche disponibles"
-    query_embedding_relajado = client_openai.embeddings.create(input=[pregunta_relajada], model="text-embedding-3-small").data[0].embedding
-    res_busqueda_relajada = pinecone_index.query(vector=query_embedding_relajado, top_k=top_k, include_metadata=True, filter=filtro_metadata)
-    
-    if res_busqueda_relajada['matches']:
-        contexto = [item['metadata']['texto'] for item in res_busqueda_relajada['matches']]
-        return "\n\n---\n\n".join(contexto), criterios["descripcion"]
-
     return None, None
 
-def generar_respuesta_inteligente(pregunta_original, contexto, descripcion_buscada, historial_chat):
-    """Genera una respuesta en streaming explicando qué se encontró y qué no."""
-    prompt_sistema = f"""
-    Eres "Asistente Virtual SEAT", un experto amable y servicial. Tu objetivo es ayudar al usuario a encontrar su coche ideal.
-    La pregunta original del usuario fue: "{pregunta_original}"
-    El usuario buscaba un coche con estas características: "{descripcion_buscada}"
 
-    He realizado una búsqueda y he encontrado los siguientes modelos que podrían encajar parcialmente:
-    CONTEXTO ENCONTRADO:
+def generar_respuesta_inteligente(pregunta_original, contexto, descripcion_buscada, historial_chat):
+    """Genera una respuesta en streaming."""
+    prompt_sistema = f"""
+    Eres "Asistente Virtual SEAT". Tu objetivo es responder al usuario basándote exclusivamente en el contexto que te proporciono.
+    La pregunta del usuario fue: "{pregunta_original}"
+    Las características que buscaba eran: "{descripcion_buscada}"
+
+    CONTEXTO ENCONTRADO (resultados de la base de datos):
     {contexto}
 
-    Tu tarea es responder al usuario de forma inteligente y conversacional.
-    Usa el contexto encontrado para formular tu respuesta. Si el contexto no coincide con alguna parte específica de la descripción, explícalo amablemente.
+    Tu tarea es:
+    1. Revisa los resultados del contexto.
+    2. Formula una respuesta clara y amable resumiendo los modelos encontrados que cumplen los criterios.
+    3. Si el contexto está vacío, indica que no se encontraron resultados para esos filtros.
     """
     
     mensajes_para_api = [{"role": "system", "content": prompt_sistema}] 
@@ -146,7 +156,7 @@ if prompt := st.chat_input("Escribe tu pregunta aquí..."):
                     )
                     st.session_state.messages.append({"role": "assistant", "content": respuesta_completa})
                 else:
-                    respuesta_error = "Lo siento, no he encontrado ningún modelo que cumpla esos criterios."
+                    respuesta_error = "Lo siento, no he encontrado ningún modelo que cumpla con los criterios de tu búsqueda."
                     st.write(respuesta_error)
                     st.session_state.messages.append({"role": "assistant", "content": respuesta_error})
             else:
