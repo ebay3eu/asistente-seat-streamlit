@@ -44,18 +44,19 @@ def extraer_criterios_de_busqueda(pregunta_usuario, historial_chat):
     ÚLTIMA PREGUNTA: "{pregunta_usuario}"
 
     Identifica una de las siguientes intenciones:
-    1. "enviar_ficha": si el usuario pide explícitamente la ficha técnica, el catálogo o un documento de un modelo.
-    2. "busqueda_general": para cualquier otra pregunta sobre modelos, precios, comparaciones, etc.
+    1. "agendar_prueba": si el usuario quiere probar, conducir, ver en persona o reservar un test drive de un modelo.
+    2. "enviar_ficha": si el usuario pide la ficha técnica, catálogo o documento de un modelo.
+    3. "busqueda_general": para cualquier otra pregunta.
 
     Responde en formato JSON. El JSON debe tener:
-    - "intent": la intención identificada ("enviar_ficha" o "busqueda_general").
-    - "modelo": si la intención es "enviar_ficha", el nombre del modelo en minúsculas (ej: "ibiza", "arona"). Si no, null.
+    - "intent": la intención identificada.
+    - "modelo": el nombre del modelo en minúsculas si la intención es "agendar_prueba" o "enviar_ficha". Si no, null.
     - "criterios": si la intención es "busqueda_general", un objeto con "precio_max" y "descripcion". Si no, null.
 
     Ejemplos:
-    - Pregunta: "dame la ficha técnica del arona" -> {{"intent": "enviar_ficha", "modelo": "arona", "criterios": null}}
-    - Pregunta: "un coche por menos de 30000" -> {{"intent": "busqueda_general", "modelo": null, "criterios": {{"precio_max": 30000, "descripcion": "un coche"}}}}
-    - Pregunta: "cuál es el híbrido más potente" -> {{"intent": "busqueda_general", "modelo": null, "criterios": {{"precio_max": 0, "descripcion": "el híbrido más potente"}}}}
+    - Pregunta: "quiero probar el formentor" -> {{"intent": "agendar_prueba", "modelo": "formentor", "criterios": null}}
+    - Pregunta: "ficha del ateca" -> {{"intent": "enviar_ficha", "modelo": "ateca", "criterios": null}}
+    - Pregunta: "cuál es el más barato" -> {{"intent": "busqueda_general", "modelo": null, "criterios": {{"precio_max": 0, "descripcion": "el coche más barato"}}}}
 
     Responde únicamente con el objeto JSON.
     """
@@ -109,7 +110,7 @@ if "messages" not in st.session_state:
 
 if not st.session_state.messages:
     with st.chat_message("assistant"):
-        st.write("¡Hola! Soy tu asistente virtual de SEAT. Puedes pedirme la ficha técnica de un modelo o preguntarme lo que necesites.")
+        st.write("¡Hola! Soy tu asistente virtual de SEAT. Puedo ayudarte a encontrar un modelo, enviarte una ficha técnica o ¡incluso agendar una prueba de conducción!")
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -123,47 +124,49 @@ if prompt := st.chat_input("Escribe tu pregunta aquí..."):
     with st.chat_message("assistant"):
         with st.spinner("Pensando..."):
             historial_relevante = st.session_state.messages[:-1]
-            # 1. Identificar la intención del usuario
             peticion = extraer_criterios_de_busqueda(prompt, historial_relevante)
             
-            # 2. Actuar según la intención detectada
-            if peticion and peticion.get("intent") == "enviar_ficha":
-                # LÓGICA PARA LA NUEVA HABILIDAD
-                modelo = peticion.get("modelo", "").lower()
-                # Construimos la ruta al archivo PDF
-                file_path = os.path.join("fichas_tecnicas", f"{modelo}.pdf")
+            if peticion:
+                intent = peticion.get("intent")
+                modelo = peticion.get("modelo", "modelo de tu interés").title()
 
-                if os.path.exists(file_path):
-                    with open(file_path, "rb") as pdf_file:
-                        st.write(f"¡Claro! Aquí tienes la ficha técnica del SEAT {modelo.title()}. Haz clic para descargar:")
-                        st.download_button(
-                            label=f"Descargar Ficha Técnica de {modelo.title()}",
-                            data=pdf_file,
-                            file_name=f"ficha_tecnica_{modelo}.pdf",
-                            mime="application/pdf"
-                        )
-                    # Guardamos un mensaje de éxito en el historial
-                    st.session_state.messages.append({"role": "assistant", "content": f"He preparado la descarga de la ficha técnica del {modelo.title()}."})
-                else:
-                    respuesta_error = f"Lo siento, no he podido encontrar la ficha técnica para el SEAT {modelo.title()}. Asegúrate de que el nombre del modelo es correcto."
-                    st.write(respuesta_error)
-                    st.session_state.messages.append({"role": "assistant", "content": respuesta_error})
+                if intent == "agendar_prueba":
+                    st.write(f"¡Claro! Para agendar tu prueba de conducción para el **SEAT {modelo}**, por favor, completa el siguiente formulario:")
+                    
+                    with st.form(key="prueba_conduccion_form"):
+                        nombre = st.text_input("Nombre completo")
+                        email = st.text_input("Correo electrónico")
+                        telefono = st.text_input("Teléfono de contacto")
+                        submitted = st.form_submit_button("Enviar Solicitud")
 
-            elif peticion and peticion.get("intent") == "busqueda_general":
-                # LÓGICA ANTIGUA PARA PREGUNTAS GENERALES
-                criterios = peticion.get("criterios")
-                contexto, descripcion = busqueda_inteligente(criterios)
-                if contexto:
-                    respuesta_completa = st.write_stream(
-                        generar_respuesta_inteligente(prompt, contexto, descripcion, historial_relevante)
-                    )
-                    st.session_state.messages.append({"role": "assistant", "content": respuesta_completa})
-                else:
-                    respuesta_error = "Lo siento, no he encontrado ningún modelo que cumpla con los criterios de tu búsqueda."
-                    st.write(respuesta_error)
-                    st.session_state.messages.append({"role": "assistant", "content": respuesta_error})
+                        if submitted:
+                            # En una app real, aquí enviarías un email o guardarías en un CRM.
+                            # Para la demo, solo mostramos un mensaje de éxito.
+                            st.success(f"¡Gracias, {nombre}! Hemos recibido tu solicitud para probar el SEAT {modelo}. Un agente te contactará pronto en {email} o {telefono}. ¿Hay algo más que necesites?")
+                            # Guardamos un mensaje de éxito en el historial
+                            st.session_state.messages.append({"role": "assistant", "content": f"He procesado la solicitud de prueba de conducción para {nombre}."})
+                
+                elif intent == "enviar_ficha":
+                    modelo_lower = peticion.get("modelo", "").lower()
+                    file_path = os.path.join("fichas_tecnicas", f"{modelo_lower}.pdf")
+                    if os.path.exists(file_path):
+                        with open(file_path, "rb") as pdf_file:
+                            st.write(f"¡Por supuesto! Aquí tienes la ficha técnica del SEAT {modelo}. Haz clic para descargar:")
+                            st.download_button(label=f"Descargar Ficha Técnica de {modelo}", data=pdf_file, file_name=f"ficha_tecnica_{modelo_lower}.pdf", mime="application/pdf")
+                        st.session_state.messages.append({"role": "assistant", "content": f"He preparado la descarga de la ficha técnica del {modelo}."})
+                    else:
+                        st.warning(f"Lo siento, no he podido encontrar la ficha técnica para el SEAT {modelo}.")
+                        st.session_state.messages.append({"role": "assistant", "content": f"No encontré la ficha para el {modelo}."})
+
+                elif intent == "busqueda_general":
+                    criterios = peticion.get("criterios")
+                    contexto, descripcion = busqueda_inteligente(criterios)
+                    if contexto:
+                        respuesta_completa = st.write_stream(generar_respuesta_inteligente(prompt, contexto, descripcion, historial_relevante))
+                        st.session_state.messages.append({"role": "assistant", "content": respuesta_completa})
+                    else:
+                        st.warning("Lo siento, no he encontrado ningún modelo que cumpla con los criterios de tu búsqueda.")
+                        st.session_state.messages.append({"role": "assistant", "content": "No encontré modelos con esos criterios."})
             else:
-                # Fallback si no se entiende la petición
-                respuesta_error = "No he podido entender tu petición. ¿Puedes reformularla?"
-                st.write(respuesta_error)
-                st.session_state.messages.append({"role": "assistant", "content": respuesta_error})
+                st.error("No he podido entender tu petición. ¿Puedes reformularla?")
+                st.session_state.messages.append({"role": "assistant", "content": "No entendí la petición."})
