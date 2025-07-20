@@ -5,10 +5,17 @@ from openai import OpenAI
 from pinecone import Pinecone
 
 # --- Configuración de la Página y Título ---
-st.set_page_config(page_title="Asistente Virtual SEAT", page_icon="🚗", layout="centered")
-st.title("🚗 Asistente Virtual SEAT")
+st.set_page_config(
+    # TÍTULO QUE APARECE EN LA PESTAÑA DEL NAVEGADOR
+    page_title="Asesor de Ventas SEAT",
+    page_icon="🚗",
+    layout="centered"
+)
 
-# --- Conexión a los servicios ---
+# --- NUEVO TÍTULO PRINCIPAL DE LA APLICACIÓN ---
+st.title("🚗 Asesor de Ventas Digital SEAT")
+
+# --- Conexión a los servicios (sin cambios) ---
 try:
     PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
@@ -16,7 +23,7 @@ except FileNotFoundError:
     st.error("Error: Faltan claves de API en los 'Secrets'.")
     st.stop()
 
-# --- Inicialización de Clientes ---
+# --- Inicialización de Clientes (sin cambios) ---
 @st.cache_resource
 def get_clients():
     client_openai = OpenAI(api_key=OPENAI_API_KEY)
@@ -25,7 +32,7 @@ def get_clients():
     return client_openai, pinecone_index
 client_openai, pinecone_index = get_clients()
 
-# --- Herramientas Internas (Nuestras "Habilidades") ---
+# --- Herramientas Internas y Lógica de IA (sin cambios) ---
 def obtener_info_financiacion():
     return """
     ### Opciones de Financiación SEAT
@@ -34,7 +41,6 @@ def obtener_info_financiacion():
     **2. SEAT Flex (Compra Flexible / PCP):** Es la opción más popular. Pagas una entrada opcional y cuotas mensuales reducidas durante 3-4 años. Al final decides si te lo quedas (pagando la última cuota), lo devuelves o lo cambias.
     **3. Leasing / Renting:** Es un alquiler a largo plazo, ideal para empresas y autónomos, con una cuota mensual que suele incluir mantenimiento, seguro, etc.
     """
-
 def obtener_info_concesionarios(provincia=None):
     concesionarios = {
         "Barcelona": "Catalunya Motor, Lesseps Motor, Sarsa (Sabadell/Terrassa), Baix Motor (Sant Boi), Martorell Motor (Martorell).",
@@ -48,34 +54,17 @@ def obtener_info_concesionarios(provincia=None):
     for prov, lista in concesionarios.items():
         respuesta_completa += f"**{prov}:**\n* {lista}\n\n"
     return respuesta_completa
-
-# --- NUEVA FUNCIÓN "RECEPCIONISTA" ---
 def determinar_intencion(prompt):
-    """Determina la intención del usuario usando palabras clave primero."""
     prompt_lower = prompt.lower()
-    
-    # 1. Detección por palabras clave para herramientas directas
-    if any(keyword in prompt_lower for keyword in ["financ", "pagar", "cuotas"]):
-        return {"intent": "consultar_financiacion"}
-    
+    if any(keyword in prompt_lower for keyword in ["financ", "pagar", "cuotas"]): return {"intent": "consultar_financiacion"}
     if any(keyword in prompt_lower for keyword in ["concesionario", "tienda", "dónde estáis"]):
         provincias = ["Barcelona", "Girona", "Tarragona", "Lleida"]
         for p in provincias:
-            if p.lower() in prompt_lower:
-                return {"intent": "buscar_concesionario", "provincia": p}
+            if p.lower() in prompt_lower: return {"intent": "buscar_concesionario", "provincia": p}
         return {"intent": "buscar_concesionario"}
-
-    if any(keyword in prompt_lower for keyword in ["ficha", "catálogo", "documento", "especificaciones"]):
-        # La extracción del modelo se hará con la IA para más flexibilidad
-        return {"intent": "enviar_ficha"}
-
-    if any(keyword in prompt_lower for keyword in ["probar", "conducir", "test drive", "verlo"]):
-        return {"intent": "agendar_prueba"}
-        
-    # 2. Si no es una herramienta, es una búsqueda general para la IA
+    if any(keyword in prompt_lower for keyword in ["ficha", "catálogo", "documento", "especificaciones"]): return {"intent": "enviar_ficha"}
+    if any(keyword in prompt_lower for keyword in ["probar", "conducir", "test drive", "verlo"]): return {"intent": "agendar_prueba"}
     return {"intent": "busqueda_general"}
-
-# --- Lógica de IA (sin cambios) ---
 def busqueda_inteligente(criterios, top_k=10):
     if not criterios or not criterios.get("descripcion"): return None, None
     filtro_metadata = {}
@@ -101,32 +90,46 @@ def generar_respuesta_inteligente(pregunta_original, contexto, descripcion_busca
         for chunk in stream: yield chunk.choices[0].delta.content or ""
     except Exception as e: yield f"Error al generar la respuesta: {e}"
 def extraer_criterios_ia(prompt, historial_chat):
-    """Usa la IA solo para extraer criterios complejos de búsqueda o entidades."""
     prompt_extraccion = f"""
     Analiza la pregunta del usuario: "{prompt}" y el historial: {historial_chat}.
     Extrae en formato JSON.
     - Si la pregunta parece una búsqueda general, extrae "precio_max" y "descripcion".
     - Si la pregunta pide una ficha o probar un modelo, extrae el "modelo".
-    Ej: "ficha del arona" -> {{"modelo": "arona"}}
-    Ej: "probar el ibiza" -> {{"modelo": "ibiza"}}
-    Ej: "coche familiar por menos de 30000" -> {{"precio_max": 30000, "descripcion": "coche familiar"}}
     """
     try:
         response = client_openai.chat.completions.create(model="gpt-4o", messages=[{"role": "system", "content": prompt_extraccion}], temperature=0.0, response_format={"type": "json_object"})
         return json.loads(response.choices[0].message.content)
     except Exception: return {}
 
-
 # --- Interfaz de la Aplicación ---
-if "messages" not in st.session_state: st.session_state.messages = []
-if not st.session_state.messages:
-    with st.chat_message("assistant"): st.write("¡Hola! Soy tu asistente virtual SEAT. ¿En qué puedo ayudarte?")
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]): st.markdown(message["content"])
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
+# --- NUEVO MENSAJE DE BIENVENIDA ---
+if not st.session_state.messages:
+    with st.chat_message("assistant"):
+        st.markdown("""
+        ¡Hola! Soy tu **Asesor de Ventas Digital de SEAT**. Estoy aquí para ayudarte a encontrar tu coche perfecto.
+
+        **Puedes pedirme cosas como:**
+        - **Buscar un modelo:** *"Busco un SUV familiar por menos de 40.000€"*
+        - **Pedir un documento:** *"Envíame la ficha técnica del SEAT León"*
+        - **Agendar una prueba:** *"Quiero probar el SEAT Arona"*
+        - **Consultar opciones:** *"¿Qué opciones de financiación tenéis?"* o *"Dime los concesionarios en Barcelona"*
+
+        ¿Cómo puedo ayudarte a empezar?
+        """)
+
+# Mostrar el historial de chat
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Obtener la nueva pregunta del usuario
 if prompt := st.chat_input("Escribe tu pregunta aquí..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"): st.markdown(prompt)
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
     with st.chat_message("assistant"):
         historial_relevante = st.session_state.messages[:-1]
@@ -153,8 +156,7 @@ if prompt := st.chat_input("Escribe tu pregunta aquí..."):
                 modelo_lower = modelo.lower()
                 file_path = os.path.join("fichas_tecnicas", f"{modelo_lower}.pdf")
                 if os.path.exists(file_path):
-                    with open(file_path, "rb") as pdf_file:
-                        st.download_button(label=f"Descargar Ficha Técnica de {modelo}", data=pdf_file, file_name=f"ficha_tecnica_{modelo_lower}.pdf", mime="application/pdf")
+                    st.download_button(label=f"Descargar Ficha Técnica de {modelo}", data=open(file_path, "rb").read(), file_name=f"ficha_tecnica_{modelo_lower}.pdf", mime="application/pdf")
                     st.session_state.messages.append({"role": "assistant", "content": f"He preparado la descarga de la ficha técnica del {modelo}."})
                 else: st.warning(f"Lo siento, no he podido encontrar la ficha técnica para el SEAT {modelo}.")
 
