@@ -117,7 +117,7 @@ if not st.session_state.messages:
         - **Agendar una prueba:** *"Quiero probar el SEAT Arona"*
         - **Consultar opciones:** *"¿Qué opciones de financiación tenéis?"* o *"Dime los concesionarios en Barcelona"*
 
-        ¿Cómo puedo ayudarte empezar?
+        ¿Cómo puedo ayudarte?
         """)
 
 # Mostrar el historial de chat
@@ -181,3 +181,4 @@ if prompt := st.chat_input("Escribe tu pregunta aquí..."):
                     else: st.warning("Lo siento, no he encontrado ningún modelo que cumpla esos criterios.")
 
                 else: st.error("No he podido entender tu petición. ¿Puedes reformularla?")
+
